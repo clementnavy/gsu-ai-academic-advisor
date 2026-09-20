@@ -5,10 +5,9 @@
   "source_url": "https://robinson.gsu.edu/program/information-systems-ms/",
   "source_checked": "2026-09-20",
   "notes": [
-    "Robinson states that, depending on concentration, students take three of four listed core courses.",
-    "Robinson lists the Cybersecurity concentration core as 18 hours, followed by six named courses plus a directed elective. This prototype does not invent an unverified credit rule for the directed elective.",
-    "Robinson lists the AI for Data-Driven Business concentration core as 18 hours, followed by six named courses plus a directed elective. This prototype does not invent an unverified credit rule for the directed elective.",
-    "The AI for Business Innovation concentration is listed as 21 hours; students take seven of eight listed concentration courses.",
+    "The curriculum structure is based on the Robinson MSIS program page.",
+    "Prerequisites are enforced only when explicitly stored as verified in this dataset.",
+    "Term availability is not treated as official unless verified from a schedule source.",
     "CIS 8391 Field Study in Computer Information Systems is required for all concentrations."
   ],
   "core_requirement": {
@@ -16,19 +15,31 @@
     "courses": [
       {
         "code": "CIS 8010",
-        "name": "AI-Enabled Process Innovation"
+        "name": "AI-Enabled Process Innovation",
+        "prerequisites": [],
+        "prereq_status": "unverified",
+        "availability": []
       },
       {
         "code": "CIS 8080",
-        "name": "Information Systems Security and Privacy in the Age of AI"
+        "name": "Information Systems Security and Privacy in the Age of AI",
+        "prerequisites": [],
+        "prereq_status": "unverified",
+        "availability": []
       },
       {
         "code": "CIS 8040",
-        "name": "Data Management for AI"
+        "name": "Data Management for AI",
+        "prerequisites": [],
+        "prereq_status": "unverified",
+        "availability": []
       },
       {
         "code": "CIS 8600",
-        "name": "Generative AI for Business"
+        "name": "Generative AI for Business",
+        "prerequisites": [],
+        "prereq_status": "unverified",
+        "availability": []
       }
     ]
   },
@@ -39,27 +50,45 @@
       "courses": [
         {
           "code": "CIS 8088",
-          "name": "Network Security and Hacking"
+          "name": "Network Security and Hacking",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8085",
-          "name": "Managing Information Systems Risk with AI"
+          "name": "Managing Information Systems Risk with AI",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8086",
-          "name": "Protecting Information Assets"
+          "name": "Protecting Information Assets",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8087",
-          "name": "Cloud Computing and Security"
+          "name": "Cloud Computing and Security",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8697",
-          "name": "The Cybersecurity Experience"
+          "name": "The Cybersecurity Experience",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8684",
-          "name": "Cyber Threat Intelligence"
+          "name": "Cyber Threat Intelligence",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         }
       ],
       "directed_elective": true
@@ -70,27 +99,45 @@
       "courses": [
         {
           "code": "CIS 8045",
-          "name": "Unstructured Data Management in AI"
+          "name": "Unstructured Data Management in AI",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8005",
-          "name": "Data Programming for Analytics"
+          "name": "Data Programming for Analytics",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8695",
-          "name": "Machine Learning Algorithms"
+          "name": "Machine Learning Algorithms",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8795",
-          "name": "Artificial Intelligence Infrastructure at Scale"
+          "name": "Artificial Intelligence Infrastructure at Scale",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8395",
-          "name": "The Big Data Analytics Experience"
+          "name": "The Big Data Analytics Experience",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8398",
-          "name": "Advanced AI Topics in Business"
+          "name": "Advanced AI Topics in Business",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         }
       ],
       "directed_elective": true
@@ -102,35 +149,59 @@
       "courses": [
         {
           "code": "CIS 8672",
-          "name": "Integrated Process Platforms for Innovation"
+          "name": "Integrated Process Platforms for Innovation",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8674",
-          "name": "Customizing Enterprise Systems Platforms"
+          "name": "Customizing Enterprise Systems Platforms",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8676",
-          "name": "Innovating with Emerging Technologies"
+          "name": "Innovating with Emerging Technologies",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8396",
-          "name": "The Digital Innovation Experience"
+          "name": "The Digital Innovation Experience",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8693",
-          "name": "Data Analytics & AI for Digital Innovation"
+          "name": "Data Analytics & AI for Digital Innovation",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8694",
-          "name": "AI for Decision Making"
+          "name": "AI for Decision Making",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8393",
-          "name": "Advanced Topics in Digital Innovation"
+          "name": "Advanced Topics in Digital Innovation",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         },
         {
           "code": "CIS 8045",
-          "name": "Agentic AI"
+          "name": "Agentic AI",
+          "prerequisites": [],
+          "prereq_status": "unverified",
+          "availability": []
         }
       ],
       "directed_elective": false
@@ -140,7 +211,10 @@
     "required": true,
     "course": {
       "code": "CIS 8391",
-      "name": "Field Study in Computer Information Systems"
+      "name": "Field Study in Computer Information Systems",
+      "prerequisites": [],
+      "prereq_status": "unverified",
+      "availability": []
     }
   }
 }

@@ -1,33 +1,19 @@
-# GSU AI Academic Advisor — PDF Reader Build
+# GSU AI Academic Advisor — Planner + Fallback Build
 
-## New feature
+New features:
+- prerequisite-aware planning
+- semester-by-semester planning
+- optional Summer terms
+- API fallback when OpenAI is unavailable or out of credits
+- PDF course extraction retained
 
-The app now reads text-based transcript / Degree Works PDFs and:
+Important:
+- prerequisite rules are enforced only when explicitly marked verified in the JSON
+- course offering/availability is not treated as official unless verified
+- graduation output is a planning estimate, not official clearance
 
-- extracts PDF text with `pypdf`
-- detects CIS course codes
-- heuristically separates likely completed vs. in-progress courses
-- pre-populates the completed/current course selectors
-- shows uncertain detections for student review
-- reports other CIS courses found outside the currently modeled degree list
-
-## Install
-
-```cmd
+Install:
 python -m pip install -r requirements.txt
-```
 
-## Run
-
-```cmd
+Run:
 python -m streamlit run app.py
-```
-
-## Important limitation
-
-This version reads PDFs with embedded/selectable text.
-
-If a transcript or Degree Works file is a scanned/image-only PDF, text extraction may return
-nothing. OCR can be added in a later version.
-
-Students should always review the automatically detected courses before building the plan.
