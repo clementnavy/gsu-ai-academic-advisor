@@ -2,14 +2,17 @@ import json
 import math
 import os
 import re
-from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
 from openai import OpenAI
 from pypdf import PdfReader
 
-st.set_page_config(page_title="GSU AI Academic Advisor", page_icon="🎓", layout="wide")
+st.set_page_config(
+    page_title="GSU AI Academic Advisor",
+    page_icon="🎓",
+    layout="wide"
+)
 
 DATA_FILE = Path("data/gsu_msis_requirements.json")
 MODEL = "gpt-5.6-luna"
@@ -21,25 +24,48 @@ def load_requirements():
 
 req = load_requirements()
 
+# -------------------------------------------------------------------
+# Basic helpers
+# -------------------------------------------------------------------
+
 def get_api_key():
     try:
         return st.secrets["OPENAI_API_KEY"]
     except Exception:
         return os.getenv("OPENAI_API_KEY")
 
-def all_course_options(concentration):
-    out, seen = [], set()
-    for course in req["core_requirement"]["courses"] + req["concentrations"][concentration]["courses"] + [req["internship"]["course"]]:
-        if course["code"] not in seen:
-            out.append(course)
-            seen.add(course["code"])
-    return out
+def shared_core_courses():
+    return req["core_requirement"]["courses"]
 
-def course_lookup(concentration):
-    return {c["code"]: c for c in all_course_options(concentration)}
+def concentration_courses(concentration):
+    return req["concentrations"][concentration]["courses"]
+
+def internship_course():
+    return req["internship"]["course"]
+
+def relevant_courses(concentration):
+    """
+    Only the common MSIS core + the selected concentration + internship.
+    Courses from other concentrations are never shown in the student's
+    Academic Record selectors.
+    """
+    items = []
+    seen = set()
+    for course in shared_core_courses() + concentration_courses(concentration) + [internship_course()]:
+        if course["code"] not in seen:
+            items.append(course)
+            seen.add(course["code"])
+    return items
 
 def course_label(course):
     return f'{course["code"]} — {course["name"]}'
+
+def course_map(concentration):
+    return {c["code"]: c for c in relevant_courses(concentration)}
+
+# -------------------------------------------------------------------
+# PDF parsing
+# -------------------------------------------------------------------
 
 def extract_pdf_text(uploaded_file):
     uploaded_file.seek(0)
@@ -48,349 +74,1198 @@ def extract_pdf_text(uploaded_file):
 
 def classify_course_line(line):
     upper = f" {line.upper()} "
-    current_markers = [" IN PROGRESS ", " IN-PROGRESS ", " IP ", " CURRENTLY ENROLLED ", " REGISTERED "]
-    if any(x in upper for x in current_markers):
+
+    current_markers = [
+        " IN PROGRESS ",
+        " IN-PROGRESS ",
+        " IP ",
+        " CURRENTLY ENROLLED ",
+        " REGISTERED ",
+    ]
+    if any(marker in upper for marker in current_markers):
         return "current"
+
     grade_pattern = r'(?<![A-Z0-9])(?:A\+|A-|A|B\+|B-|B|C\+|C-|C|D\+|D-|D|F|P|S|U|CR)(?![A-Z0-9])'
     if re.search(grade_pattern, upper):
         return "completed"
-    if any(x in upper for x in ["COMPLETE", "COMPLETED", "SATISFIED", "PASSED"]):
+
+    if any(marker in upper for marker in ["COMPLETE", "COMPLETED", "SATISFIED", "PASSED"]):
         return "completed"
+
     return "unknown"
 
 def detect_courses(text, known_codes):
     known = {c.upper() for c in known_codes}
     pattern = re.compile(r'\b(CIS)\s*[-:]?\s*(\d{4})\b', re.I)
-    results, other = {}, {}
+
+    relevant = {}
+    other_cis = {}
+
     for raw in text.splitlines():
         line = re.sub(r"\s+", " ", raw).strip()
         if not line:
             continue
+
         for dept, number in pattern.findall(line):
             code = f"{dept.upper()} {number}"
             status = classify_course_line(line)
-            target = results if code.upper() in known else other
-            prev = target.get(code)
-            if prev is None or (prev["status"] == "unknown" and status != "unknown"):
-                target[code] = {"status": status, "line": line}
-    return results, other
+            target = relevant if code.upper() in known else other_cis
 
-def missing_prereqs(course, completed):
-    prereqs = course.get("prerequisites", [])
+            previous = target.get(code)
+            if previous is None or (
+                previous["status"] == "unknown" and status != "unknown"
+            ):
+                target[code] = {"status": status, "line": line}
+
+    return relevant, other_cis
+
+# -------------------------------------------------------------------
+# Academic rule engine
+# -------------------------------------------------------------------
+
+def missing_prerequisites(course, completed):
+    """
+    Enforce a prerequisite only when the dataset explicitly marks it verified.
+    """
     if course.get("prereq_status") != "verified":
         return [], True
-    return [p for p in prereqs if p not in completed], False
 
-def remaining_plan(concentration, completed, current):
+    prerequisites = course.get("prerequisites", [])
+    missing = [p for p in prerequisites if p not in completed]
+    return missing, False
+
+def build_rule_plan(concentration, completed, current):
+    completed_set = set(completed)
     done = set(completed) | set(current)
-    completed_only = set(completed)
-    core_courses = req["core_requirement"]["courses"]
-    core_done = [c for c in core_courses if c["code"] in done]
-    core_needed = max(0, req["core_requirement"]["choose"] - len(core_done))
-    available_core = [c for c in core_courses if c["code"] not in done]
+
+    core = shared_core_courses()
+    core_done = [c for c in core if c["code"] in done]
+    core_needed = max(
+        0,
+        req["core_requirement"]["choose"] - len(core_done)
+    )
+    remaining_core = [c for c in core if c["code"] not in done]
 
     conc = req["concentrations"][concentration]
     conc_done = [c for c in conc["courses"] if c["code"] in done]
-    remaining_conc = [c for c in conc["courses"] if c["code"] not in done]
-    conc_needed = max(0, conc.get("choose", len(conc["courses"])) - len(conc_done)) if conc["mode"] == "choose_n" else len(remaining_conc)
+    remaining_conc = [
+        c for c in conc["courses"] if c["code"] not in done
+    ]
 
-    internship = req["internship"]["course"]
-    internship_remaining = internship["code"] not in done
+    if conc["mode"] == "choose_n":
+        conc_needed = max(0, conc["choose"] - len(conc_done))
+    else:
+        conc_needed = len(remaining_conc)
 
-    # Prerequisite-aware eligibility.
-    blocked, eligible_core, eligible_conc = [], [], []
-    for category, courses in [("Core", available_core), ("Concentration", remaining_conc)]:
+    eligible_core = []
+    eligible_concentration = []
+    blocked = []
+
+    for category, courses in [
+        ("MSIS Core", remaining_core),
+        (f"{concentration} Concentration", remaining_conc),
+    ]:
         for course in courses:
-            missing, unverified = missing_prereqs(course, completed_only)
-            item = {"category": category, **course, "missing_prereqs": missing, "prereq_unverified": unverified}
+            missing, unverified = missing_prerequisites(course, completed_set)
+
+            item = {
+                **course,
+                "category": category,
+                "missing_prerequisites": missing,
+                "prerequisite_unverified": unverified,
+            }
+
             if missing:
                 blocked.append(item)
-            elif category == "Core":
+            elif category == "MSIS Core":
                 eligible_core.append(item)
             else:
-                eligible_conc.append(item)
+                eligible_concentration.append(item)
 
-    internship_item = {"category": "Internship", **internship}
-    missing, unverified = missing_prereqs(internship, completed_only)
-    internship_item["missing_prereqs"] = missing
-    internship_item["prereq_unverified"] = unverified
+    internship = internship_course()
+    internship_remaining = internship["code"] not in done
+    missing, unverified = missing_prerequisites(internship, completed_set)
+
+    internship_item = {
+        **internship,
+        "category": "Field Study / Internship",
+        "missing_prerequisites": missing,
+        "prerequisite_unverified": unverified,
+    }
 
     return {
         "core_done": core_done,
         "core_needed_count": core_needed,
         "eligible_core": eligible_core,
-        "conc_done": conc_done,
-        "conc_needed_count": conc_needed,
-        "eligible_conc": eligible_conc,
+        "concentration_done": conc_done,
+        "concentration_needed_count": conc_needed,
+        "eligible_concentration": eligible_concentration,
         "blocked": blocked,
         "internship_remaining": internship_remaining,
         "internship_item": internship_item,
         "directed_elective": conc.get("directed_elective", False),
     }
 
-def next_terms(start_term, start_year, count, include_summer):
-    order = ["Spring", "Summer", "Fall"] if include_summer else ["Spring", "Fall"]
-    term = start_term
-    year = start_year
-    result = []
-
-    for _ in range(count):
-        result.append((term, year))
-        idx = order.index(term)
-        next_idx = (idx + 1) % len(order)
-        next_term = order[next_idx]
-        if next_idx <= idx:
-            year += 1
-        term = next_term
-    return result
-
 def planning_queue(plan):
     queue = []
-    queue.extend(plan["eligible_core"][:plan["core_needed_count"]])
-    queue.extend(plan["eligible_conc"][:plan["conc_needed_count"]])
-    if plan["internship_remaining"]:
-        queue.append(plan["internship_item"])
+
+    for course in plan["eligible_core"][:plan["core_needed_count"]]:
+        queue.append({
+            **course,
+            "selection_reason": (
+                "It fills one of the remaining shared MSIS core-selection slots."
+            ),
+        })
+
+    for course in plan["eligible_concentration"][:plan["concentration_needed_count"]]:
+        queue.append({
+            **course,
+            "selection_reason": (
+                "It is a remaining course represented in the student's selected concentration."
+            ),
+        })
+
+    if (
+        plan["internship_remaining"]
+        and not plan["internship_item"]["missing_prerequisites"]
+    ):
+        queue.append({
+            **plan["internship_item"],
+            "selection_reason": (
+                "It represents the required CIS 8391 field-study component."
+            ),
+        })
+
     return queue
 
-def build_semester_plan(plan, course_load, start_term, start_year, include_summer):
+def next_terms(start_term, start_year, count, include_summer):
+    order = ["Spring", "Summer", "Fall"] if include_summer else ["Spring", "Fall"]
+
+    term = start_term
+    year = start_year
+    terms = []
+
+    for _ in range(count):
+        terms.append((term, year))
+
+        current_index = order.index(term)
+        next_index = (current_index + 1) % len(order)
+        term = order[next_index]
+
+        if next_index <= current_index:
+            year += 1
+
+    return terms
+
+def build_semester_plan(
+    plan,
+    normal_load,
+    next_semester_load,
+    start_term,
+    start_year,
+    include_summer,
+):
     queue = planning_queue(plan)
-    terms_needed = max(1, math.ceil(len(queue) / course_load)) if queue else 0
-    terms = next_terms(start_term, start_year, terms_needed, include_summer) if terms_needed else []
 
-    semester_rows = []
-    idx = 0
-    for term, year in terms:
-        term_courses = []
-        for _ in range(course_load):
-            if idx >= len(queue):
+    if not queue:
+        return []
+
+    rows = []
+    queue_index = 0
+    term_index = 0
+
+    for term, year in next_terms(
+        start_term,
+        start_year,
+        len(queue) + 10,
+        include_summer,
+    ):
+        if queue_index >= len(queue):
+            break
+
+        load = (
+            next_semester_load
+            if term_index == 0 and next_semester_load
+            else normal_load
+        )
+        load = max(1, int(load))
+
+        selected = []
+        for _ in range(load):
+            if queue_index >= len(queue):
                 break
-            course = queue[idx]
-            term_courses.append(course)
-            idx += 1
-        semester_rows.append({"term": f"{term} {year}", "courses": term_courses})
+            selected.append(queue[queue_index])
+            queue_index += 1
 
-    return semester_rows
+        rows.append({
+            "term": f"{term} {year}",
+            "courses": selected,
+            "planned_load": load,
+        })
+        term_index += 1
 
-def fallback_response(question, concentration, completed, current, course_load, work_status, schedule_pref, plan, semester_rows):
-    q = question.lower()
-    recs = [c for row in semester_rows for c in row["courses"]]
-    rec_names = ", ".join(c["code"] for c in recs[:course_load]) or "no additional modeled courses"
+    return rows
 
-    if "prereq" in q or "eligible" in q:
-        if plan["blocked"]:
-            details = "; ".join(f'{x["code"]} requires {", ".join(x["missing_prereqs"])}' for x in plan["blocked"])
-            return f"Based on the verified prerequisite rules in this prototype: {details}."
-        return "No course is currently blocked by a verified prerequisite rule in this prototype. Some prerequisites are still marked unverified, so confirm them with a GSU academic advisor."
+# -------------------------------------------------------------------
+# Conversational planning-state parser
+# -------------------------------------------------------------------
 
-    if "graduate" in q or "finish" in q or "when" in q:
-        if semester_rows:
-            return (
-                f"Your planning sequence currently runs through **{semester_rows[-1]['term']}** "
-                f"at {course_load} course(s) per semester. This is only a planning estimate; "
-                "actual graduation depends on official degree audit results, course availability, "
-                "directed-elective rules, and advisor approval."
+NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+}
+
+def find_course_count(message):
+    match = re.search(
+        r'\b(one|two|three|four|1|2|3|4)\s+'
+        r'(?:course|courses|class|classes)\b',
+        message,
+        re.I,
+    )
+    if not match:
+        return None
+    return NUMBER_WORDS[match.group(1).lower()]
+
+def apply_chat_overrides(message):
+    """
+    Natural-language chat changes update planning preferences, not degree rules.
+    """
+    text = message.lower()
+    changes = []
+
+    # Employment.
+    if re.search(r"\b(?:i\s+)?work\s+full[- ]time\b", text):
+        st.session_state.override_work_status = "Full-time"
+        changes.append("Employment → Full-time")
+
+    elif re.search(r"\b(?:i\s+)?work\s+part[- ]time\b", text):
+        st.session_state.override_work_status = "Part-time"
+        changes.append("Employment → Part-time")
+
+    elif any(
+        phrase in text
+        for phrase in [
+            "i don't work",
+            "i do not work",
+            "not working",
+            "i am not working",
+        ]
+    ):
+        st.session_state.override_work_status = "Not working"
+        changes.append("Employment → Not working")
+
+    # Summer planning.
+    if any(
+        phrase in text
+        for phrase in [
+            "include summer",
+            "take summer classes",
+            "use summer",
+            "classes in summer",
+        ]
+    ):
+        st.session_state.override_include_summer = True
+        changes.append("Summer → Included")
+
+    elif any(
+        phrase in text
+        for phrase in [
+            "no summer",
+            "skip summer",
+            "don't include summer",
+            "do not include summer",
+        ]
+    ):
+        st.session_state.override_include_summer = False
+        changes.append("Summer → Excluded")
+
+    # Course-load changes.
+    count = find_course_count(text)
+
+    if count is not None:
+        if any(
+            phrase in text
+            for phrase in [
+                "next semester",
+                "next term",
+                "upcoming semester",
+                "coming semester",
+            ]
+        ):
+            st.session_state.override_next_semester_load = count
+            changes.append(
+                f"Next-semester load → {count} course(s)"
             )
-        return "The modeled requirements currently appear accounted for. This does not constitute official graduation clearance."
 
-    if "work" in q or "full-time" in q or "lighter" in q or "load" in q:
-        return (
-            f"Because you selected **{work_status}** employment and a load of **{course_load} course(s) per semester**, "
-            f"the rule engine recommends starting with **{rec_names}**. Your schedule preference is **{schedule_pref}**. "
-            "Course meeting times are not yet verified in this prototype."
-        )
+        elif any(
+            phrase in text
+            for phrase in [
+                "per semester",
+                "each semester",
+                "every semester",
+                "per term",
+                "each term",
+            ]
+        ):
+            st.session_state.override_normal_load = count
+            st.session_state.override_next_semester_load = None
+            changes.append(
+                f"Normal semester load → {count} course(s)"
+            )
 
-    if "next" in q or "take" in q or "recommend" in q:
-        return (
-            f"Based on the modeled degree requirements and your selected load, the next recommended course(s) are **{rec_names}**. "
-            "The app prioritizes remaining core selections, then concentration requirements, then the internship. "
-            "Unverified prerequisites and term availability should be confirmed with an advisor."
-        )
+    return changes
 
-    return (
-        f"Based on your current profile, you have {plan['core_needed_count']} core selection(s) and "
-        f"{plan['conc_needed_count']} concentration item(s) still represented as outstanding in this prototype. "
-        f"Your next modeled course(s) are {rec_names}. Ask me about prerequisites, what to take next, "
-        "your workload, or your estimated completion term."
+def effective_profile(base_work, base_load, base_include_summer):
+    return {
+        "work_status": (
+            st.session_state.override_work_status
+            or base_work
+        ),
+        "normal_load": (
+            st.session_state.override_normal_load
+            or base_load
+        ),
+        "next_semester_load": (
+            st.session_state.override_next_semester_load
+        ),
+        "include_summer": (
+            st.session_state.override_include_summer
+            if st.session_state.override_include_summer is not None
+            else base_include_summer
+        ),
+    }
+
+# -------------------------------------------------------------------
+# Advisor clarification logic
+# -------------------------------------------------------------------
+
+def likely_needs_follow_up(question, profile):
+    """
+    Ask a focused follow-up when the question depends on a personal/policy fact
+    the app does not know. This is intentionally conservative.
+    """
+    q = question.lower()
+
+    enrollment_questions = any(
+        phrase in q
+        for phrase in [
+            "am i allowed",
+            "can i take one course",
+            "minimum course",
+            "full-time student",
+            "part-time student",
+            "maintain status",
+            "visa",
+            "f-1",
+            "financial aid",
+            "assistantship",
+            "ga ",
+            "graduate assistant",
+        ]
     )
 
-def advisor_context(concentration, completed, current, work_status, course_load, schedule_pref, plan, semester_rows):
-    rows = []
+    if enrollment_questions:
+        return (
+            "Before I give you a more specific answer, which rule are you asking about: "
+            "**academic program planning, F-1 enrollment/status, financial aid, or a graduate assistantship?** "
+            "Those can have different minimum-enrollment requirements."
+        )
+
+    scheduling_questions = any(
+        phrase in q
+        for phrase in [
+            "what time",
+            "evening class",
+            "online class",
+            "which day",
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "course offered",
+            "available next semester",
+        ]
+    )
+
+    if scheduling_questions:
+        return (
+            "Which **semester and year** do you want me to plan for? "
+            "Exact class times and offerings must be checked against the official schedule."
+        )
+
+    return None
+
+# -------------------------------------------------------------------
+# Rule-based fallback answers
+# -------------------------------------------------------------------
+
+def first_course(semester_rows):
+    if semester_rows and semester_rows[0]["courses"]:
+        return semester_rows[0]["courses"][0]
+    return None
+
+def find_course(code, semester_rows):
+    code = code.upper()
+    for row_idx, row in enumerate(semester_rows):
+        for course_idx, course in enumerate(row["courses"]):
+            if course["code"].upper() == code:
+                return row_idx, course_idx, row, course
+    return None
+
+def fallback_answer(
+    question,
+    concentration,
+    profile,
+    plan,
+    semester_rows,
+    changes,
+):
+    prefix = ""
+
+    if changes:
+        prefix = (
+            "**I updated your planning scenario:** "
+            + "; ".join(changes)
+            + ".\n\n"
+        )
+
+    follow_up = likely_needs_follow_up(question, profile)
+
+    # If a clarification is essential, ask it instead of guessing.
+    if follow_up:
+        return prefix + follow_up + (
+            "\n\n**Verify:** Any official enrollment/status requirement with the appropriate GSU office."
+        )
+
+    q = question.lower()
+
+    # Course-specific explanation.
+    match = re.search(r'\bCIS\s*[-:]?\s*(\d{4})\b', question, re.I)
+    if match:
+        code = f"CIS {match.group(1)}"
+        located = find_course(code, semester_rows)
+        first = first_course(semester_rows)
+
+        if "why" in q or "recommend" in q:
+            if located:
+                row_idx, course_idx, row, course = located
+                if row_idx == 0 and course_idx == 0:
+                    return prefix + (
+                        f"**{code} is the first course in your current generated plan.** "
+                        f"The rule engine put it there because {course['selection_reason'].lower()} "
+                        "That ordering is a planning choice, not proof that GSU requires this course first.\n\n"
+                        "**Verify:** prerequisite details and whether the course is actually offered in the planned term."
+                    )
+
+                return prefix + (
+                    f"**{code} is in your current plan, but it is not the first recommendation.** "
+                    f"It appears in **{row['term']}** because {course['selection_reason'].lower()} "
+                    f"The current first recommendation is **{first['code'] if first else 'none'}**.\n\n"
+                    "**Verify:** prerequisite details and term availability."
+                )
+
+            return prefix + (
+                f"**{code} is not in your current generated plan.** "
+                f"The current first recommendation is **{first['code'] if first else 'none'}**. "
+                "I will not invent a reason for a recommendation the planner did not make."
+            )
+
+    if any(
+        phrase in q
+        for phrase in [
+            "what should i take next",
+            "what do i take next",
+            "next course",
+            "recommend next",
+        ]
+    ):
+        if not semester_rows:
+            return prefix + (
+                "The current modeled requirements do not queue another course."
+            )
+
+        row = semester_rows[0]
+        course_names = ", ".join(
+            f"**{c['code']}**" for c in row["courses"]
+        )
+        reasons = "; ".join(
+            f"{c['code']}: {c['selection_reason']}"
+            for c in row["courses"]
+        )
+
+        return prefix + (
+            f"For **{row['term']}**, the current planner recommends {course_names}. "
+            f"{reasons}\n\n"
+            "**Verify:** official prerequisites and actual course availability before registering."
+        )
+
+    if any(
+        phrase in q
+        for phrase in [
+            "when will i finish",
+            "when can i graduate",
+            "graduation",
+            "finish my degree",
+            "complete my degree",
+        ]
+    ):
+        if semester_rows:
+            return prefix + (
+                f"Under the current planning assumptions, your modeled sequence ends in "
+                f"**{semester_rows[-1]['term']}**. This is a planning estimate, not official graduation clearance.\n\n"
+                "**Verify:** Degree Works, course availability, prerequisites, directed-elective details, "
+                "transfer/waiver decisions, and advisor approval."
+            )
+
+    if any(
+        phrase in q
+        for phrase in [
+            "work full-time",
+            "full-time job",
+            "work part-time",
+            "workload",
+        ]
+    ):
+        return prefix + (
+            f"I am using **{profile['work_status']}** employment and "
+            f"**{profile['normal_load']} course(s) per normal semester** in your planning scenario. "
+            "Employment affects the workload recommendation, but it does not change degree requirements.\n\n"
+            "**Verify:** actual class meeting times and any enrollment rules that apply to your student status."
+        )
+
+    first = first_course(semester_rows)
+    finish = semester_rows[-1]["term"] if semester_rows else "no additional modeled term"
+
+    return prefix + (
+        f"Here is what I can currently verify from the planner: your selected concentration is "
+        f"**{concentration}**, your first modeled recommendation is "
+        f"**{first['code'] if first else 'none'}**, and the current plan runs through "
+        f"**{finish}**.\n\n"
+        "I can help explain your requirements, workload, course sequence, estimated completion, "
+        "and planning tradeoffs. If your question depends on an official policy or live course offering, "
+        "I will ask for the missing detail or tell you what must be verified."
+    )
+
+# -------------------------------------------------------------------
+# GenAI context and answer
+# -------------------------------------------------------------------
+
+def build_ai_context(
+    concentration,
+    completed,
+    current,
+    profile,
+    plan,
+    semester_rows,
+    changes,
+):
+    common_core = "\n".join(
+        f'- {c["code"]}: {c["name"]}'
+        for c in shared_core_courses()
+    )
+
+    concentration_list = "\n".join(
+        f'- {c["code"]}: {c["name"]}'
+        for c in concentration_courses(concentration)
+    )
+
+    plan_lines = []
     for row in semester_rows:
-        rows.append(row["term"] + ": " + ", ".join(c["code"] for c in row["courses"]))
+        courses = []
+        for c in row["courses"]:
+            courses.append(
+                f'{c["code"]} | {c["category"]} | reason={c["selection_reason"]} | '
+                f'prereq={"unverified" if c.get("prerequisite_unverified") else "verified/cleared"}'
+            )
+        plan_lines.append(
+            f'{row["term"]} ({row["planned_load"]} course load): '
+            + " ; ".join(courses)
+        )
+
     return f"""
+ACADEMIC ADVISING CONTEXT
+
+Institution: {req["institution"]}
 Program: {req["program"]}
-Concentration: {concentration}
-Completed: {completed}
-In progress: {current}
-Work status: {work_status}
-Preferred load: {course_load}
-Schedule preference: {schedule_pref}
-Core selections left: {plan["core_needed_count"]}
-Concentration items left: {plan["conc_needed_count"]}
+Selected concentration: {concentration}
+Curriculum source: {req["source_url"]}
+
+COMMON MSIS CORE
+{common_core}
+
+SELECTED CONCENTRATION COURSES ONLY
+{concentration_list}
+
+STUDENT ACADEMIC RECORD
+Completed: {", ".join(completed) if completed else "None selected"}
+In progress: {", ".join(current) if current else "None selected"}
+
+ACTIVE PLANNING PROFILE
+Employment: {profile["work_status"]}
+Normal course load: {profile["normal_load"]}
+Next-semester override: {profile["next_semester_load"] or "None"}
+Summer included: {profile["include_summer"]}
+Latest conversational changes: {changes or "None"}
+
+RULE ENGINE
+Core slots remaining: {plan["core_needed_count"]}
+Selected-concentration items remaining: {plan["concentration_needed_count"]}
 Internship outstanding: {plan["internship_remaining"]}
-Blocked by verified prerequisites: {[x["code"] for x in plan["blocked"]]}
-Semester plan:
-{chr(10).join(rows)}
-Important: prerequisite and course availability information may be unverified. Do not invent missing rules.
+Directed-elective verification flag: {plan["directed_elective"]}
+Verified prerequisite blocks: {[c["code"] for c in plan["blocked"]]}
+
+CURRENT GENERATED PLAN
+{chr(10).join(plan_lines) if plan_lines else "No additional modeled courses queued."}
+
+LIMITATIONS
+- Course availability by semester is not yet verified.
+- Prerequisite information may be unverified.
+- F-1, financial-aid, assistantship, registration, and minimum-enrollment rules are not stored as authoritative policy here.
+- Official graduation clearance must come from GSU.
 """.strip()
 
-def ask_ai(context, history):
+AI_INSTRUCTIONS = """
+You are the conversational AI Academic Advisor in a Georgia State University MSIS classroom prototype.
+
+GOAL
+Help the student reason through academic planning in a natural conversation, like a helpful advisor.
+
+HOW TO ANSWER
+1. Answer the student's actual question first.
+2. Use the supplied rule-engine context as the authoritative source for the CURRENT plan.
+3. Use only the SELECTED CONCENTRATION section for concentration-specific course claims.
+4. Shared MSIS core courses may apply across concentrations.
+5. If the question is missing an important fact, ask ONE focused follow-up question that would materially improve the answer.
+6. Do not ask unnecessary questions when you already have enough information.
+7. When a student changes a preference in chat, use the ACTIVE PLANNING PROFILE supplied by the app.
+8. Explain why a course was recommended by using the exact selection reason from the CURRENT GENERATED PLAN.
+9. Never invent a recommendation for a course that is not in the current plan.
+
+VERIFICATION BEHAVIOR
+10. Clearly distinguish:
+    a. verified/stored curriculum facts,
+    b. planning assumptions made by this prototype,
+    c. items that still need official verification.
+11. For any GSU-specific fact not supplied in context, explain the likely factors but say it is not verified here.
+12. When relevant, end with a short line beginning with **Verify:** that names the exact thing the student should confirm.
+13. Do not claim official graduation clearance.
+14. Do not invent prerequisites, actual semester offerings, transfer-credit decisions, waivers, registration eligibility,
+    immigration/F-1 rules, financial-aid rules, or graduate-assistantship rules.
+
+CONVERSATIONAL BEHAVIOR
+15. You may answer broad academic-advising questions, not just course-plan questions.
+16. If the student's question could mean different things, briefly explain the distinction and ask the single most useful follow-up.
+17. Be practical and concise, but explain enough for the student to understand why.
+18. If there is uncertainty, do not stop at "I can't verify." Give the useful reasoning you can, then state what needs verification.
+""".strip()
+
+def call_ai(context, history):
     key = get_api_key()
     if not key:
         raise RuntimeError("OPENAI_API_KEY not configured")
+
     client = OpenAI(api_key=key)
-    history_text = "\n".join(f'{m["role"].upper()}: {m["content"]}' for m in history[-10:])
+
+    history_text = "\n".join(
+        f'{message["role"].upper()}: {message["content"]}'
+        for message in history[-14:]
+    )
+
     response = client.responses.create(
         model=MODEL,
-        instructions=(
-            "You are an academic-advising assistant for a classroom prototype. "
-            "Use only the supplied program/rule-engine context for degree-rule claims. "
-            "Never invent prerequisites, course availability, waivers, transfer-credit decisions, "
-            "or official graduation clearance. Be concise and explain uncertainty."
-        ),
-        input=f"{context}\n\nConversation:\n{history_text}",
+        instructions=AI_INSTRUCTIONS,
+        input=f"""
+{context}
+
+RECENT CONVERSATION
+{history_text}
+
+Respond to the latest USER message.
+""".strip(),
         store=False,
     )
+
     return response.output_text
 
-# ---------------- Session ----------------
-for key, default in {
+# -------------------------------------------------------------------
+# Session state
+# -------------------------------------------------------------------
+
+defaults = {
     "messages": [],
     "pdf_completed": [],
     "pdf_current": [],
     "pdf_unknown": [],
-    "last_uploaded_name": None,
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+    "last_uploaded_key": None,
+    "override_work_status": None,
+    "override_normal_load": None,
+    "override_next_semester_load": None,
+    "override_include_summer": None,
+}
 
-# ---------------- UI ----------------
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+# -------------------------------------------------------------------
+# UI
+# -------------------------------------------------------------------
+
 st.title("🎓 GSU AI Academic Advisor")
-st.caption("Student Project Prototype — MS Information Systems")
+st.caption(
+    "Student Project Prototype — Georgia State University MS Information Systems"
+)
 
 st.warning(
-    "Prototype only. This is not an official degree audit, registration, or graduation-clearance system."
+    "Prototype only. This is not an official GSU Degree Works, registration, "
+    "immigration, financial-aid, or graduation-clearance system."
 )
 
 with st.sidebar:
-    st.header("Curriculum source")
-    st.write("Robinson College of Business — Information Systems, M.S.")
-    st.link_button("Open Robinson MSIS page", req["source_url"])
-    st.write("GenAI:", "✅ configured" if get_api_key() else "⚠️ fallback mode")
-
-st.subheader("1. Student profile")
-c1, c2 = st.columns(2)
-with c1:
-    concentration = st.selectbox("MSIS concentration", list(req["concentrations"].keys()))
-    work_status = st.selectbox("Employment status", ["Not working", "Part-time", "Full-time"])
-    course_load = st.selectbox("Preferred courses per semester", [1, 2, 3, 4], index=1)
-with c2:
-    schedule_pref = st.selectbox("Preferred schedule", ["No preference", "Evening", "Daytime", "Online/Hybrid"])
-    start_term = st.selectbox("Planning starts", ["Spring", "Fall", "Summer"], index=1)
-    start_year = st.number_input("Start year", min_value=2026, max_value=2035, value=2026, step=1)
-    include_summer = st.checkbox("Include Summer semesters", value=False)
-
-st.subheader("2. Academic record")
-options = all_course_options(concentration)
-labels = {course_label(c): c["code"] for c in options}
-code_to_label = {v: k for k, v in labels.items()}
-label_list = list(labels.keys())
-
-uploaded = st.file_uploader("Upload transcript / Degree Works PDF", type=["pdf"])
-
-if uploaded and st.session_state.last_uploaded_name != uploaded.name:
-    try:
-        text = extract_pdf_text(uploaded)
-        if text.strip():
-            detected, _ = detect_courses(text, list(code_to_label.keys()))
-            st.session_state.pdf_completed = sorted([c for c, x in detected.items() if x["status"] == "completed"])
-            st.session_state.pdf_current = sorted([c for c, x in detected.items() if x["status"] == "current"])
-            st.session_state.pdf_unknown = sorted([c for c, x in detected.items() if x["status"] == "unknown"])
-            st.session_state.last_uploaded_name = uploaded.name
-            st.success(f"Detected {len(detected)} modeled MSIS course(s). Review them below.")
-        else:
-            st.error("No selectable text was found in the PDF. Enter courses manually.")
-    except Exception as e:
-        st.error(f"Could not read the PDF: {e}")
-
-if st.session_state.pdf_unknown:
-    st.warning("Needs manual review: " + ", ".join(st.session_state.pdf_unknown))
-
-default_completed = [code_to_label[c] for c in st.session_state.pdf_completed if c in code_to_label]
-completed_labels = st.multiselect("Completed courses", label_list, default=default_completed)
-completed = [labels[x] for x in completed_labels]
-
-current_choices = [x for x in label_list if labels[x] not in completed]
-default_current = [code_to_label[c] for c in st.session_state.pdf_current if c in code_to_label and code_to_label[c] in current_choices]
-current_labels = st.multiselect("Courses currently in progress", current_choices, default=default_current)
-current = [labels[x] for x in current_labels]
-
-plan = remaining_plan(concentration, completed, current)
-semester_rows = build_semester_plan(plan, course_load, start_term, int(start_year), include_summer)
-
-st.subheader("3. Prerequisite check")
-if plan["blocked"]:
-    for item in plan["blocked"]:
-        st.error(f'{item["code"]} blocked — missing: {", ".join(item["missing_prereqs"])}')
-else:
-    st.success("No course is blocked by a verified prerequisite rule in the current dataset.")
-
-unverified = [c for c in all_course_options(concentration) if c.get("prereq_status") != "verified"]
-if unverified:
-    st.info(
-        f"Prerequisites are still unverified for {len(unverified)} modeled course(s). "
-        "The planner does not invent prerequisite rules; verify them before registration."
+    st.header("Advisor status")
+    st.write(
+        "AI service:",
+        "✅ Connected" if get_api_key() else "⚠️ Rule-based fallback"
+    )
+    st.link_button(
+        "Robinson MSIS curriculum",
+        req["source_url"]
     )
 
-st.subheader("4. Semester-by-semester plan")
+    if st.button("Reset chat planning changes"):
+        st.session_state.override_work_status = None
+        st.session_state.override_normal_load = None
+        st.session_state.override_next_semester_load = None
+        st.session_state.override_include_summer = None
+        st.rerun()
+
+# ---------------- Profile ----------------
+
+st.subheader("1. Student profile")
+
+left, right = st.columns(2)
+
+with left:
+    concentration = st.selectbox(
+        "MSIS concentration",
+        list(req["concentrations"].keys()),
+        help=(
+            "The Academic Record section below will automatically load "
+            "the courses relevant to this concentration."
+        ),
+    )
+
+    base_work = st.selectbox(
+        "Employment status",
+        ["Not working", "Part-time", "Full-time"],
+    )
+
+    base_load = st.selectbox(
+        "Normal courses per semester",
+        [1, 2, 3, 4],
+        index=1,
+    )
+
+with right:
+    schedule_pref = st.selectbox(
+        "Preferred schedule",
+        [
+            "No preference",
+            "Evening",
+            "Daytime",
+            "Online/Hybrid",
+        ],
+    )
+
+    start_term = st.selectbox(
+        "Planning starts",
+        ["Spring", "Fall", "Summer"],
+        index=1,
+    )
+
+    start_year = st.number_input(
+        "Start year",
+        min_value=2026,
+        max_value=2035,
+        value=2026,
+        step=1,
+    )
+
+    base_include_summer = st.checkbox(
+        "Include Summer semesters",
+        value=False,
+    )
+
+profile = effective_profile(
+    base_work,
+    base_load,
+    base_include_summer,
+)
+
+st.markdown("#### Active planning profile")
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Employment", profile["work_status"])
+m2.metric(
+    "Normal load",
+    f'{profile["normal_load"]} course(s)',
+)
+m3.metric(
+    "Next semester",
+    (
+        f'{profile["next_semester_load"]} course(s)'
+        if profile["next_semester_load"]
+        else "Normal load"
+    ),
+)
+m4.metric(
+    "Summer",
+    "Included" if profile["include_summer"] else "Excluded",
+)
+
+# ---------------- Academic record ----------------
+
+st.subheader("2. Academic record")
+
+st.info(
+    f"You selected **{concentration}**. "
+    "The course selectors below contain the shared MSIS core, "
+    f"**{concentration} courses only**, and CIS 8391. "
+    "Courses from the other concentrations are not shown."
+)
+
+core = shared_core_courses()
+conc_courses = concentration_courses(concentration)
+internship = internship_course()
+
+with st.expander("Courses included for this concentration", expanded=True):
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.markdown("**Shared MSIS Core**")
+        for course in core:
+            st.write(
+                f'{course["code"]} — {course["name"]}'
+            )
+
+    with c2:
+        st.markdown(f"**{concentration}**")
+        for course in conc_courses:
+            st.write(
+                f'{course["code"]} — {course["name"]}'
+            )
+
+    with c3:
+        st.markdown("**Field Study**")
+        st.write(
+            f'{internship["code"]} — {internship["name"]}'
+        )
+
+courses = relevant_courses(concentration)
+labels = {
+    course_label(c): c["code"]
+    for c in courses
+}
+code_to_label = {
+    code: label
+    for label, code in labels.items()
+}
+label_list = list(labels.keys())
+
+uploaded = st.file_uploader(
+    "Upload transcript / Degree Works PDF",
+    type=["pdf"],
+)
+
+# A unique key prevents old PDF selections from one concentration
+# from leaking into another concentration.
+upload_key = (
+    f"{uploaded.name if uploaded else 'none'}|{concentration}"
+)
+
+if (
+    uploaded
+    and st.session_state.last_uploaded_key != upload_key
+):
+    try:
+        text = extract_pdf_text(uploaded)
+
+        if text.strip():
+            detected, other = detect_courses(
+                text,
+                list(code_to_label.keys()),
+            )
+
+            st.session_state.pdf_completed = sorted(
+                code
+                for code, info in detected.items()
+                if info["status"] == "completed"
+            )
+
+            st.session_state.pdf_current = sorted(
+                code
+                for code, info in detected.items()
+                if info["status"] == "current"
+            )
+
+            st.session_state.pdf_unknown = sorted(
+                code
+                for code, info in detected.items()
+                if info["status"] == "unknown"
+            )
+
+            st.session_state.last_uploaded_key = upload_key
+
+            st.success(
+                f"Detected {len(detected)} course(s) relevant to "
+                f"the **{concentration}** planning view."
+            )
+
+            if other:
+                st.caption(
+                    f"The PDF also contained {len(other)} CIS course(s) "
+                    "outside this concentration-specific planning view."
+                )
+
+        else:
+            st.error(
+                "No selectable text was found in the PDF. "
+                "Enter the courses manually."
+            )
+
+    except Exception as exc:
+        st.error(
+            f"Could not read the PDF: {exc}"
+        )
+
+if st.session_state.pdf_unknown:
+    visible_unknown = [
+        c for c in st.session_state.pdf_unknown
+        if c in code_to_label
+    ]
+    if visible_unknown:
+        st.warning(
+            "Detected but needs manual review: "
+            + ", ".join(visible_unknown)
+        )
+
+default_completed = [
+    code_to_label[code]
+    for code in st.session_state.pdf_completed
+    if code in code_to_label
+]
+
+completed_labels = st.multiselect(
+    f"Completed courses — {concentration}",
+    label_list,
+    default=default_completed,
+)
+
+completed = [
+    labels[label]
+    for label in completed_labels
+]
+
+current_choices = [
+    label
+    for label in label_list
+    if labels[label] not in completed
+]
+
+default_current = [
+    code_to_label[code]
+    for code in st.session_state.pdf_current
+    if (
+        code in code_to_label
+        and code_to_label[code] in current_choices
+    )
+]
+
+current_labels = st.multiselect(
+    f"Courses currently in progress — {concentration}",
+    current_choices,
+    default=default_current,
+)
+
+current = [
+    labels[label]
+    for label in current_labels
+]
+
+# ---------------- Rule engine ----------------
+
+plan = build_rule_plan(
+    concentration,
+    completed,
+    current,
+)
+
+semester_rows = build_semester_plan(
+    plan,
+    profile["normal_load"],
+    profile["next_semester_load"],
+    start_term,
+    int(start_year),
+    profile["include_summer"],
+)
+
+# ---------------- Plan ----------------
+
+st.subheader("3. Current academic plan")
+
 if semester_rows:
     for row in semester_rows:
         with st.container(border=True):
-            st.markdown(f"### {row['term']}")
-            for c in row["courses"]:
-                st.write(f"**{c['code']}** — {c['name']} · {c['category']}")
-                if not c.get("availability"):
-                    st.caption("Course offering for this term has not been verified.")
-    st.caption(
-        f"Planning estimate through {semester_rows[-1]['term']}. "
-        "This is not an official graduation date."
+            st.markdown(
+                f"### {row['term']}"
+            )
+            st.caption(
+                f'Planned load: {row["planned_load"]} course(s)'
+            )
+
+            for course in row["courses"]:
+                st.write(
+                    f'**{course["code"]}** — {course["name"]}'
+                )
+                st.caption(
+                    f'{course["category"]}: '
+                    f'{course["selection_reason"]}'
+                )
+
+                if course.get("prerequisite_unverified"):
+                    st.caption(
+                        "⚠ Prerequisites are not yet verified "
+                        "in this prototype."
+                    )
+
+                if not course.get("availability"):
+                    st.caption(
+                        "⚠ Offering in this exact term "
+                        "has not been verified."
+                    )
+
+    st.info(
+        f"Current planning estimate ends in "
+        f"**{semester_rows[-1]['term']}**. "
+        "This is not official graduation clearance."
     )
+
 else:
-    st.success("No additional modeled courses are currently queued.")
+    st.success(
+        "No additional modeled course is currently queued."
+    )
 
-st.subheader("5. 💬 Ask the Academic Advisor")
-if not get_api_key():
-    st.info("GenAI API is not configured. The advisor will automatically use rule-based fallback responses.")
+if plan["blocked"]:
+    st.markdown("#### Verified prerequisite blocks")
+    for course in plan["blocked"]:
+        st.error(
+            f'{course["code"]}: missing '
+            f'{", ".join(course["missing_prerequisites"])}'
+        )
 
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+# ---------------- AI advisor ----------------
 
-question = st.chat_input("Ask about what to take next, prerequisites, workload, or estimated completion.")
+st.subheader("4. 💬 AI Academic Advisor")
+
+st.write(
+    "Ask the advisor about your degree plan, course sequence, workload, "
+    "graduation estimate, concentration, prerequisites, scheduling, or "
+    "other academic-planning questions. When important information is missing, "
+    "the advisor will ask a follow-up question instead of guessing."
+)
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+question = st.chat_input(
+    "Example: I work full-time. Can I take only one course next semester?"
+)
 
 if question:
-    st.session_state.messages.append({"role": "user", "content": question})
-    with st.chat_message("user"):
-        st.markdown(question)
+    st.session_state.messages.append({
+        "role": "user",
+        "content": question,
+    })
 
-    context = advisor_context(concentration, completed, current, work_status, course_load, schedule_pref, plan, semester_rows)
+    # Update conversational profile first.
+    changes = apply_chat_overrides(question)
+
+    profile = effective_profile(
+        base_work,
+        base_load,
+        base_include_summer,
+    )
+
+    # Recalculate the rule engine after every conversational change.
+    plan = build_rule_plan(
+        concentration,
+        completed,
+        current,
+    )
+
+    semester_rows = build_semester_plan(
+        plan,
+        profile["normal_load"],
+        profile["next_semester_load"],
+        start_term,
+        int(start_year),
+        profile["include_summer"],
+    )
+
+    context = build_ai_context(
+        concentration,
+        completed,
+        current,
+        profile,
+        plan,
+        semester_rows,
+        changes,
+    )
 
     with st.chat_message("assistant"):
-        with st.spinner("Reviewing your plan..."):
+        with st.spinner(
+            "Reviewing your academic scenario..."
+        ):
             try:
-                answer = ask_ai(context, st.session_state.messages)
-                source = "GenAI"
-            except Exception:
-                answer = fallback_response(
-                    question, concentration, completed, current, course_load,
-                    work_status, schedule_pref, plan, semester_rows
+                answer = call_ai(
+                    context,
+                    st.session_state.messages,
                 )
-                source = "Rule-based fallback"
+                response_mode = "GenAI + degree-rule engine"
+
+            except Exception:
+                answer = fallback_answer(
+                    question,
+                    concentration,
+                    profile,
+                    plan,
+                    semester_rows,
+                    changes,
+                )
+                response_mode = "Rule-based advisor fallback"
+
             st.markdown(answer)
-            st.caption(f"Response mode: {source}")
+            st.caption(
+                f"Response mode: {response_mode}"
+            )
 
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": answer,
+    })
 
-if st.session_state.messages and st.button("Clear advisor chat"):
-    st.session_state.messages = []
+    # Refresh page so active profile and plan show the changes.
     st.rerun()
+
+if st.session_state.messages:
+    if st.button("Clear conversation"):
+        st.session_state.messages = []
+        st.rerun()
