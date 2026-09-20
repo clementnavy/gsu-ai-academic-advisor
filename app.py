@@ -739,34 +739,94 @@ Help the student reason through academic planning in a natural conversation, lik
 
 HOW TO ANSWER
 1. Answer the student's actual question first.
-2. Use the supplied rule-engine context as the authoritative source for the CURRENT plan.
+2. Use the supplied rule-engine context as authoritative for the CURRENT generated plan.
 3. Use only the SELECTED CONCENTRATION section for concentration-specific course claims.
 4. Shared MSIS core courses may apply across concentrations.
-5. If the question is missing an important fact, ask ONE focused follow-up question that would materially improve the answer.
+5. If the question is missing an important personal fact, ask ONE focused follow-up question that would materially improve the answer.
 6. Do not ask unnecessary questions when you already have enough information.
 7. When a student changes a preference in chat, use the ACTIVE PLANNING PROFILE supplied by the app.
-8. Explain why a course was recommended by using the exact selection reason from the CURRENT GENERATED PLAN.
+8. Explain why a course was recommended using the exact selection reason from the CURRENT GENERATED PLAN.
 9. Never invent a recommendation for a course that is not in the current plan.
 
+LIVE VERIFICATION
+10. When live web search is available, use it for current or policy-dependent facts such as:
+    - current GSU program information
+    - current course/program pages
+    - deadlines
+    - tuition/fees
+    - current enrollment guidance
+    - F-1/ISSS guidance
+    - financial-aid or assistantship information
+    - current office/contact information
+    - facts the student explicitly asks you to verify
+11. Prefer official Georgia State University sources. For federal immigration rules, official U.S. government sources may also be used.
+12. Do not treat search snippets, blogs, Reddit, or unofficial pages as authoritative university policy.
+13. If official sources conflict or are incomplete, say so clearly.
+14. Live verification does not override the student's personal Degree Works record or official advisor decisions.
+
 VERIFICATION BEHAVIOR
-10. Clearly distinguish:
-    a. verified/stored curriculum facts,
-    b. planning assumptions made by this prototype,
-    c. items that still need official verification.
-11. For any GSU-specific fact not supplied in context, explain the likely factors but say it is not verified here.
-12. When relevant, end with a short line beginning with **Verify:** that names the exact thing the student should confirm.
-13. Do not claim official graduation clearance.
-14. Do not invent prerequisites, actual semester offerings, transfer-credit decisions, waivers, registration eligibility,
-    immigration/F-1 rules, financial-aid rules, or graduate-assistantship rules.
+15. Clearly distinguish:
+    a. facts verified from the stored curriculum/rule engine,
+    b. facts verified live from official sources,
+    c. planning assumptions,
+    d. items that still need human/official confirmation.
+16. When relevant, end with a short line beginning with **Verify:** naming the exact remaining item.
+17. Do not claim official graduation clearance.
+18. Do not invent prerequisites, course availability, transfer-credit decisions, waivers, registration eligibility,
+    immigration/F-1 outcomes, financial-aid eligibility, or graduate-assistantship eligibility.
 
 CONVERSATIONAL BEHAVIOR
-15. You may answer broad academic-advising questions, not just course-plan questions.
-16. If the student's question could mean different things, briefly explain the distinction and ask the single most useful follow-up.
-17. Be practical and concise, but explain enough for the student to understand why.
-18. If there is uncertainty, do not stop at "I can't verify." Give the useful reasoning you can, then state what needs verification.
+19. You may answer broad academic-advising questions, not just course-plan questions.
+20. If the student's question could mean different things, briefly explain the distinction and ask the single most useful follow-up.
+21. Be practical and concise, but explain enough for the student to understand why.
+22. If there is uncertainty, do not stop at "I can't verify." Give the useful reasoning you can, search official sources when appropriate, then state what remains to be confirmed.
 """.strip()
 
-def call_ai(context, history):
+OFFICIAL_VERIFICATION_DOMAINS = [
+    "gsu.edu",
+    "dhs.gov",
+    "uscis.gov",
+    "ed.gov",
+]
+
+def extract_web_sources(response):
+    """
+    Pull URL citations from Responses API output.
+    Returns a de-duplicated list of {"title": ..., "url": ...}.
+    """
+    found = []
+    seen = set()
+
+    try:
+        for item in response.output:
+            if getattr(item, "type", None) != "message":
+                continue
+            for content in getattr(item, "content", []) or []:
+                for annotation in getattr(content, "annotations", []) or []:
+                    if getattr(annotation, "type", None) != "url_citation":
+                        continue
+
+                    url = getattr(annotation, "url", None)
+                    title = getattr(annotation, "title", None)
+
+                    # SDK versions may nest citation details.
+                    if not url:
+                        citation = getattr(annotation, "url_citation", None)
+                        url = getattr(citation, "url", None) if citation else None
+                        title = title or (getattr(citation, "title", None) if citation else None)
+
+                    if url and url not in seen:
+                        seen.add(url)
+                        found.append({
+                            "title": title or url,
+                            "url": url,
+                        })
+    except Exception:
+        pass
+
+    return found
+
+def call_ai(context, history, live_verification=True):
     key = get_api_key()
     if not key:
         raise RuntimeError("OPENAI_API_KEY not configured")
@@ -778,21 +838,35 @@ def call_ai(context, history):
         for message in history[-14:]
     )
 
+    tools = []
+    if live_verification:
+        tools.append({
+            "type": "web_search",
+            "filters": {
+                "allowed_domains": OFFICIAL_VERIFICATION_DOMAINS
+            },
+            "search_context_size": "medium",
+        })
+
     response = client.responses.create(
         model=MODEL,
         instructions=AI_INSTRUCTIONS,
+        tools=tools,
         input=f"""
 {context}
 
 RECENT CONVERSATION
 {history_text}
 
+LIVE VERIFICATION STATUS
+{"Enabled. Search official sources when the question depends on current or policy-specific information." if live_verification else "Disabled. Do not claim current verification beyond the stored rule-engine context."}
+
 Respond to the latest USER message.
 """.strip(),
         store=False,
     )
 
-    return response.output_text
+    return response.output_text, extract_web_sources(response)
 
 # -------------------------------------------------------------------
 # Session state
@@ -834,6 +908,19 @@ with st.sidebar:
         "AI service:",
         "✅ Connected" if get_api_key() else "⚠️ Rule-based fallback"
     )
+    live_verification = st.toggle(
+        "Live official-source verification",
+        value=True,
+        help=(
+            "When enabled, the AI may search official GSU and relevant U.S. government "
+            "websites for current policies and information."
+        ),
+    )
+    if live_verification:
+        st.success("Live verification enabled")
+    else:
+        st.caption("Live verification disabled")
+
     st.link_button(
         "Robinson MSIS curriculum",
         req["source_url"]
@@ -1185,6 +1272,15 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+        sources = message.get("sources", [])
+        if sources:
+            with st.expander("Live verification sources"):
+                for source in sources:
+                    st.markdown(f'- [{source["title"]}]({source["url"]})')
+
+        if message.get("mode"):
+            st.caption(f'Response mode: {message["mode"]}')
+
 question = st.chat_input(
     "Example: I work full-time. Can I take only one course next semester?"
 )
@@ -1235,11 +1331,16 @@ if question:
             "Reviewing your academic scenario..."
         ):
             try:
-                answer = call_ai(
+                answer, sources = call_ai(
                     context,
                     st.session_state.messages,
+                    live_verification=live_verification,
                 )
-                response_mode = "GenAI + degree-rule engine"
+                response_mode = (
+                    "GenAI + rule engine + live verification"
+                    if live_verification
+                    else "GenAI + degree-rule engine"
+                )
 
             except Exception:
                 answer = fallback_answer(
@@ -1250,9 +1351,18 @@ if question:
                     semester_rows,
                     changes,
                 )
+                sources = []
                 response_mode = "Rule-based advisor fallback"
 
             st.markdown(answer)
+
+            if sources:
+                with st.expander("Live verification sources"):
+                    for source in sources:
+                        st.markdown(
+                            f'- [{source["title"]}]({source["url"]})'
+                        )
+
             st.caption(
                 f"Response mode: {response_mode}"
             )
@@ -1260,6 +1370,8 @@ if question:
     st.session_state.messages.append({
         "role": "assistant",
         "content": answer,
+        "sources": sources,
+        "mode": response_mode,
     })
 
     # Refresh page so active profile and plan show the changes.

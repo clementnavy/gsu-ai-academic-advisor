@@ -1,51 +1,71 @@
-# GSU AI Academic Advisor — Concentration-Specific + Conversational Advisor
+# GSU AI Academic Advisor — Live Verification Build
 
-## What changed
+## New feature: live verification
 
-### 1. Concentration-specific academic record
-Selecting a concentration now changes the Academic Record course list.
+The AI advisor can now use the OpenAI Responses API `web_search` tool to verify current
+facts from official sources during the conversation.
 
-For example, Cybersecurity shows:
-- shared MSIS core courses
-- Cybersecurity concentration courses only
-- CIS 8391 Field Study
+Search is restricted to:
+- gsu.edu (including Robinson, ISSS, Registrar, and other GSU subdomains)
+- dhs.gov
+- uscis.gov
+- ed.gov
 
-Courses belonging only to the other concentrations are not shown.
+This means the advisor can check current information for questions involving:
+- GSU program information
+- deadlines
+- tuition/fees
+- current university guidance
+- F-1 / ISSS topics
+- financial aid and assistantship topics
+- official office/contact information
+- facts the student explicitly asks to verify
 
-The same behavior applies to every concentration.
+## Important design rule
 
-### 2. Better AI advisor
-The AI advisor now:
-- answers broad academic-planning questions
-- uses the exact current generated plan
-- asks one focused follow-up question when a key fact is missing
-- updates planning preferences from chat
-- explains what it can verify
-- explains useful decision factors when a rule is not verified
-- ends with a Verify note when an official policy/course fact still needs confirmation
+Live web information does NOT replace:
+- the student's official Degree Works audit
+- official registration records
+- advisor approval
+- transfer/waiver decisions
+- immigration determinations
+- financial-aid eligibility decisions
 
-### 3. Rule-based fallback
-If the OpenAI API is unavailable or out of credits, the site still answers common advising questions.
+The AI should explain what it found, show sources, and still identify any remaining item
+that requires official confirmation.
 
-## Install
+## UI
 
-```cmd
-python -m pip install -r requirements.txt
-```
+The sidebar now has:
+
+`Live official-source verification`
+
+Turn it ON to allow the AI to search official sources.
+
+## Test questions
+
+Try:
+- `Can I take only one class and still maintain F-1 status?`
+- `Verify whether the MSIS Cybersecurity concentration starts in Spring.`
+- `What are the current MSIS class times?`
+- `What is the current tuition?`
+- `Why did you recommend CIS 8088?`
+- `Is CIS 8088 offered next semester?`
+
+For questions where official sources do not provide a definite answer, the advisor should
+say what was found and what still needs confirmation.
 
 ## Run
 
 ```cmd
+python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-## Suggested test
+## Deploy
 
-1. Select Cybersecurity.
-2. Confirm Academic Record shows only shared core + Cybersecurity + CIS 8391.
-3. Switch to AI for Data-Driven Business and confirm the concentration courses change.
-4. Ask: `I work full-time.`
-5. Ask: `I want only one course next semester.`
-6. Ask: `Why did you recommend CIS 8088?`
-7. Ask: `Can I take only one class and still be considered full-time?`
-   - The advisor should ask which rule matters (academic, F-1, aid, or assistantship) or clearly flag verification.
+```cmd
+git add -A
+git commit -m "Add live official-source verification"
+git push origin main
+```
