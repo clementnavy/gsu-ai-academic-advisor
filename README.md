@@ -1,30 +1,46 @@
-# AI Academic Advisor — Starter Website
+# GSU AI Academic Advisor — GenAI Chat Build
 
-## Windows setup
-
-Open Command Prompt in this folder and run:
+## Install/update packages
 
 ```cmd
-python -m venv .venv
-.venv\Scripts\activate.bat
 python -m pip install -r requirements.txt
+```
+
+## Local API secret
+
+Create:
+
+`.streamlit\secrets.toml`
+
+with:
+
+```toml
+OPENAI_API_KEY = "YOUR_KEY"
+```
+
+Do not commit `secrets.toml`.
+
+## Run
+
+```cmd
 python -m streamlit run app.py
 ```
 
-Then open the local URL shown by Streamlit, normally:
+## Streamlit Community Cloud
 
-http://localhost:8501
+Open the deployed app's settings/secrets area and add:
 
-## What works in this version
+```toml
+OPENAI_API_KEY = "YOUR_KEY"
+```
 
-- Student information form
-- Manual completed/current course selection
-- Employment and course-load preferences
-- Rule-based remaining-course calculation
-- Simple prerequisite checking
-- Recommended next-course list
-- Transcript/Degree Works upload control (parsing comes next)
+Then save/reboot the app.
+
+## Model
+
+The prototype uses `gpt-5.6-luna` to keep interactive advising relatively economical.
 
 ## Important
 
-The bundled degree data is demo data only. Replace it with verified GSU catalog requirements before presenting it as GSU-specific.
+This is a classroom prototype, not an official GSU advising, registration, Degree Works,
+or graduation-clearance system.
