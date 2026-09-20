@@ -1,24 +1,21 @@
-# GSU AI Academic Advisor — GenAI Chat Build
+# GSU AI Academic Advisor — PDF Reader Build
 
-## Install/update packages
+## New feature
+
+The app now reads text-based transcript / Degree Works PDFs and:
+
+- extracts PDF text with `pypdf`
+- detects CIS course codes
+- heuristically separates likely completed vs. in-progress courses
+- pre-populates the completed/current course selectors
+- shows uncertain detections for student review
+- reports other CIS courses found outside the currently modeled degree list
+
+## Install
 
 ```cmd
 python -m pip install -r requirements.txt
 ```
-
-## Local API secret
-
-Create:
-
-`.streamlit\secrets.toml`
-
-with:
-
-```toml
-OPENAI_API_KEY = "YOUR_KEY"
-```
-
-Do not commit `secrets.toml`.
 
 ## Run
 
@@ -26,21 +23,11 @@ Do not commit `secrets.toml`.
 python -m streamlit run app.py
 ```
 
-## Streamlit Community Cloud
+## Important limitation
 
-Open the deployed app's settings/secrets area and add:
+This version reads PDFs with embedded/selectable text.
 
-```toml
-OPENAI_API_KEY = "YOUR_KEY"
-```
+If a transcript or Degree Works file is a scanned/image-only PDF, text extraction may return
+nothing. OCR can be added in a later version.
 
-Then save/reboot the app.
-
-## Model
-
-The prototype uses `gpt-5.6-luna` to keep interactive advising relatively economical.
-
-## Important
-
-This is a classroom prototype, not an official GSU advising, registration, Degree Works,
-or graduation-clearance system.
+Students should always review the automatically detected courses before building the plan.

@@ -1,10 +1,13 @@
+import io
 import json
 import math
 import os
+import re
 from pathlib import Path
 
 import streamlit as st
 from openai import OpenAI
+from pypdf import PdfReader
 
 st.set_page_config(
     page_title="GSU AI Academic Advisor",
@@ -23,7 +26,6 @@ def load_requirements():
 req = load_requirements()
 
 def get_api_key():
-    # Streamlit Cloud / local secrets first, then environment variable.
     try:
         return st.secrets["OPENAI_API_KEY"]
     except Exception:
@@ -32,21 +34,104 @@ def get_api_key():
 def all_course_options(concentration):
     items = []
     seen = set()
+
     for c in req["core_requirement"]["courses"]:
         if c["code"] not in seen:
             items.append(c)
             seen.add(c["code"])
+
     for c in req["concentrations"][concentration]["courses"]:
         if c["code"] not in seen:
             items.append(c)
             seen.add(c["code"])
+
     internship = req["internship"]["course"]
     if internship["code"] not in seen:
         items.append(internship)
+
     return items
 
 def course_label(course):
     return f'{course["code"]} — {course["name"]}'
+
+def extract_pdf_text(uploaded_file):
+    """Extract embedded text from a text-based PDF."""
+    uploaded_file.seek(0)
+    reader = PdfReader(uploaded_file)
+    pages = []
+    for i, page in enumerate(reader.pages):
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        pages.append(text)
+    return "\n".join(pages)
+
+def normalize_course_code(dept, number):
+    return f"{dept.upper()} {number}"
+
+def classify_course_line(line):
+    """
+    Heuristic classification for transcripts / Degree Works.
+    Returns: 'completed', 'current', or 'unknown'
+    """
+    upper = line.upper()
+
+    # Common in-progress markers.
+    current_markers = [
+        " IN PROGRESS", "IN-PROGRESS", " IP ", "CURRENTLY ENROLLED",
+        "CURRENT", "REGISTERED"
+    ]
+    if any(marker in f" {upper} " for marker in current_markers):
+        return "current"
+
+    # Common completed-grade markers.
+    # The boundaries reduce false positives from ordinary words.
+    grade_pattern = r'(?<![A-Z0-9])(?:A\+|A-|A|B\+|B-|B|C\+|C-|C|D\+|D-|D|F|P|S|U|CR)(?![A-Z0-9])'
+    if re.search(grade_pattern, upper):
+        return "completed"
+
+    # Degree Works often uses "COMPLETE" language.
+    completed_markers = [
+        "COMPLETE", "COMPLETED", "SATISFIED", "PASSED"
+    ]
+    if any(marker in upper for marker in completed_markers):
+        return "completed"
+
+    return "unknown"
+
+def detect_courses_from_text(text, known_course_codes):
+    """
+    Finds course codes in extracted PDF text and tries to classify them.
+    Known GSU MSIS courses are prioritized, but other CIS courses are also reported.
+    """
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+
+    known_upper = {c.upper() for c in known_course_codes}
+    results = {}
+    other_cis = {}
+
+    # Accept forms like CIS 8080, CIS-8080, CIS8080.
+    pattern = re.compile(r'\b(CIS)\s*[-:]?\s*(\d{4})\b', re.I)
+
+    for line in lines:
+        matches = pattern.findall(line)
+        for dept, number in matches:
+            code = normalize_course_code(dept, number)
+            status = classify_course_line(line)
+            target = results if code.upper() in known_upper else other_cis
+
+            # Prefer stronger classifications over unknown.
+            prev = target.get(code)
+            if prev is None:
+                target[code] = {"status": status, "line": line}
+            elif prev["status"] == "unknown" and status != "unknown":
+                target[code] = {"status": status, "line": line}
+            elif prev["status"] == "current" and status == "completed":
+                # If the same course appears as both, completed wins.
+                target[code] = {"status": status, "line": line}
+
+    return results, other_cis
 
 def remaining_plan(concentration, completed, current):
     done = set(completed) | set(current)
@@ -84,6 +169,7 @@ def remaining_plan(concentration, completed, current):
 
 def build_recommendations(plan, course_load):
     recs = []
+
     core_added = 0
     for c in plan["available_core"]:
         if len(recs) >= course_load or core_added >= plan["core_needed_count"]:
@@ -100,6 +186,7 @@ def build_recommendations(plan, course_load):
 
     if plan["internship_remaining"] and len(recs) < course_load:
         recs.append({"category": "Internship", **plan["internship"]})
+
     return recs
 
 def make_advisor_context(
@@ -115,6 +202,7 @@ def make_advisor_context(
     recommendations,
 ):
     conc = req["concentrations"][concentration]
+
     core_list = "\n".join(
         f'- {c["code"]}: {c["name"]}'
         for c in req["core_requirement"]["courses"]
@@ -172,34 +260,24 @@ ADVISOR_INSTRUCTIONS = """
 You are the AI Academic Advisor for a classroom prototype focused on Georgia State
 University's MS Information Systems program.
 
-Your job is to explain the academic plan and answer the student's follow-up questions.
+Use the verified program data and rule-engine results supplied by the application.
+Never invent degree requirements, prerequisites, course availability, transfer-credit
+decisions, waivers, or official graduation clearance.
 
-Critical rules:
-1. Treat the VERIFIED PROGRAM DATA and RULE-ENGINE RESULTS supplied by the application
-   as the authoritative source for degree requirements in this conversation.
-2. Never invent prerequisites, course availability, tuition, waivers, transfer-credit
-   decisions, registration eligibility, or official graduation clearance.
-3. If the supplied data does not answer a question, say that the information is not
-   verified in this prototype and advise the student to confirm it with a GSU academic advisor.
-4. You may personalize explanations using the student's work status, desired course load,
-   schedule preference, and stated constraints.
-5. Do not change degree requirements simply because the student asks for a faster or easier plan.
-6. Distinguish completed courses from courses currently in progress.
-7. If a directed-elective rule is flagged as needing verification, do not guess how it applies.
-8. A graduation estimate is only a planning estimate. Do not state that the student is
-   officially cleared to graduate.
-9. Keep answers clear, practical, and concise. When useful, explain why a recommendation
-   fits the student's constraints.
-10. Do not request sensitive identifiers such as Social Security numbers, passwords,
-    PantherCard credentials, or banking information.
+You may personalize explanations using employment status, desired course load,
+schedule preference, and other stated constraints.
+
+If information is not verified in the application, say so and recommend confirmation
+with a GSU academic advisor.
+
+Do not request sensitive identifiers such as SSNs, passwords, PantherCard credentials,
+or banking information.
 """.strip()
 
 def ask_ai(context, chat_history):
     api_key = get_api_key()
     if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY is not configured. Add it to Streamlit secrets."
-        )
+        raise RuntimeError("OPENAI_API_KEY is not configured. Add it to Streamlit secrets.")
 
     client = OpenAI(api_key=api_key)
 
@@ -222,17 +300,38 @@ for program-rule claims.
 """.strip(),
         store=False,
     )
+
     return response.output_text
+
+# -------------------- Session state --------------------
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+if "pdf_completed" not in st.session_state:
+    st.session_state.pdf_completed = []
+
+if "pdf_current" not in st.session_state:
+    st.session_state.pdf_current = []
+
+if "pdf_unknown" not in st.session_state:
+    st.session_state.pdf_unknown = []
+
+if "pdf_other_cis" not in st.session_state:
+    st.session_state.pdf_other_cis = {}
+
+if "last_uploaded_name" not in st.session_state:
+    st.session_state.last_uploaded_name = None
+
+# -------------------- UI --------------------
 
 st.title("🎓 GSU AI Academic Advisor")
 st.caption("Student Project Prototype — Georgia State University MS Information Systems")
 
 st.warning(
     "Prototype only. This is not an official GSU advising, Degree Works, registration, "
-    "or graduation-clearance system. Verify final decisions with an academic advisor."
+    "or graduation-clearance system. Always review detected courses and verify final decisions "
+    "with an academic advisor."
 )
 
 with st.sidebar:
@@ -240,12 +339,14 @@ with st.sidebar:
     st.write("Robinson College of Business — Information Systems, M.S.")
     st.write("Data checked: 2026-09-20")
     st.link_button("Open Robinson MSIS page", req["source_url"])
+
     if get_api_key():
         st.success("GenAI connection configured")
     else:
         st.error("GenAI API key not configured")
 
 st.subheader("1. Student profile")
+
 c1, c2 = st.columns(2)
 
 with c1:
@@ -275,21 +376,113 @@ st.subheader("2. Academic record")
 
 options = all_course_options(concentration)
 labels = {course_label(c): c["code"] for c in options}
+code_to_label = {v: k for k, v in labels.items()}
 label_list = list(labels.keys())
 
 uploaded = st.file_uploader(
     "Upload transcript / Degree Works PDF",
     type=["pdf"],
-    help="Automatic PDF course extraction is a later build stage."
+    help="The app reads text-based PDFs. Scanned/image-only PDFs may need OCR in a later version."
 )
-if uploaded:
-    st.info("File received. Automatic course extraction is not enabled yet.")
 
-completed_labels = st.multiselect("Completed courses", label_list)
+known_codes = list(code_to_label.keys())
+
+if uploaded is not None:
+    # Parse only when a new file is selected.
+    if st.session_state.last_uploaded_name != uploaded.name:
+        try:
+            text = extract_pdf_text(uploaded)
+
+            if not text.strip():
+                st.session_state.pdf_completed = []
+                st.session_state.pdf_current = []
+                st.session_state.pdf_unknown = []
+                st.session_state.pdf_other_cis = {}
+                st.error(
+                    "I could not extract text from this PDF. It may be an image/scanned PDF. "
+                    "For now, enter courses manually."
+                )
+            else:
+                detected, other_cis = detect_courses_from_text(text, known_codes)
+
+                completed = []
+                current = []
+                unknown = []
+
+                for code, info in detected.items():
+                    if info["status"] == "completed":
+                        completed.append(code)
+                    elif info["status"] == "current":
+                        current.append(code)
+                    else:
+                        unknown.append(code)
+
+                st.session_state.pdf_completed = sorted(completed)
+                st.session_state.pdf_current = sorted(current)
+                st.session_state.pdf_unknown = sorted(unknown)
+                st.session_state.pdf_other_cis = other_cis
+                st.session_state.last_uploaded_name = uploaded.name
+
+                st.success(
+                    f"PDF analyzed: detected {len(detected)} known MSIS course(s). "
+                    "Review the selections below before building your plan."
+                )
+
+        except Exception as e:
+            st.error(f"Could not read the PDF: {e}")
+
+# Show detection summary.
+if st.session_state.pdf_completed or st.session_state.pdf_current or st.session_state.pdf_unknown:
+    st.markdown("#### PDF detection results")
+
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Likely completed", len(st.session_state.pdf_completed))
+    d2.metric("Likely in progress", len(st.session_state.pdf_current))
+    d3.metric("Needs review", len(st.session_state.pdf_unknown))
+
+    if st.session_state.pdf_unknown:
+        st.warning(
+            "These detected courses could not be confidently classified as completed or in progress: "
+            + ", ".join(st.session_state.pdf_unknown)
+        )
+
+if st.session_state.pdf_other_cis:
+    with st.expander("Other CIS courses detected in the PDF"):
+        st.write(
+            "These CIS courses were found but are not part of the currently modeled concentration/core list. "
+            "They may be electives, transfer-equivalent courses, or courses outside this prototype."
+        )
+        for code, info in st.session_state.pdf_other_cis.items():
+            st.write(f"• **{code}** — detected status: {info['status']}")
+
+default_completed_labels = [
+    code_to_label[c]
+    for c in st.session_state.pdf_completed
+    if c in code_to_label
+]
+
+# Unknown courses are not automatically marked completed.
+completed_labels = st.multiselect(
+    "Completed courses",
+    label_list,
+    default=default_completed_labels,
+    help="Automatically detected courses are preselected. Correct anything the PDF parser got wrong."
+)
 completed = [labels[x] for x in completed_labels]
 
 current_choices = [x for x in label_list if labels[x] not in completed]
-current_labels = st.multiselect("Courses currently in progress", current_choices)
+default_current_labels = [
+    code_to_label[c]
+    for c in st.session_state.pdf_current
+    if c in code_to_label and code_to_label[c] in current_choices
+]
+
+current_labels = st.multiselect(
+    "Courses currently in progress",
+    current_choices,
+    default=default_current_labels,
+    help="Review these carefully. PDF status detection is heuristic."
+)
 current = [labels[x] for x in current_labels]
 
 extra = st.text_area(
@@ -335,6 +528,7 @@ if st.session_state.get("plan_built"):
 
     with right:
         st.markdown("### Degree progress")
+
         st.write(
             f'**MSIS core:** {len(plan["core_done"])} of '
             f'{req["core_requirement"]["choose"]} required core selections accounted for.'
@@ -380,7 +574,7 @@ if st.session_state.get("plan_built"):
         )
         st.caption(
             "This is not an official graduation date and does not yet account for "
-            "actual course availability or unverified prerequisites."
+            "actual course availability, transfer-credit decisions, or unverified prerequisites."
         )
     else:
         st.success("All requirements represented in this prototype appear accounted for.")
@@ -389,9 +583,7 @@ st.divider()
 st.subheader("4. 💬 Ask the AI Academic Advisor")
 
 if not get_api_key():
-    st.info(
-        "Add OPENAI_API_KEY to your Streamlit secrets to enable the advisor chat."
-    )
+    st.info("Add OPENAI_API_KEY to your Streamlit secrets to enable the advisor chat.")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -403,6 +595,7 @@ question = st.chat_input(
 
 if question:
     st.session_state.messages.append({"role": "user", "content": question})
+
     with st.chat_message("user"):
         st.markdown(question)
 
