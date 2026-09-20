@@ -1,0 +1,146 @@
+{
+  "institution": "Georgia State University",
+  "college": "J. Mack Robinson College of Business",
+  "program": "Information Systems, M.S.",
+  "source_url": "https://robinson.gsu.edu/program/information-systems-ms/",
+  "source_checked": "2026-09-20",
+  "notes": [
+    "Robinson states that, depending on concentration, students take three of four listed core courses.",
+    "Robinson lists the Cybersecurity concentration core as 18 hours, followed by six named courses plus a directed elective. This prototype does not invent an unverified credit rule for the directed elective.",
+    "Robinson lists the AI for Data-Driven Business concentration core as 18 hours, followed by six named courses plus a directed elective. This prototype does not invent an unverified credit rule for the directed elective.",
+    "The AI for Business Innovation concentration is listed as 21 hours; students take seven of eight listed concentration courses.",
+    "CIS 8391 Field Study in Computer Information Systems is required for all concentrations."
+  ],
+  "core_requirement": {
+    "choose": 3,
+    "courses": [
+      {
+        "code": "CIS 8010",
+        "name": "AI-Enabled Process Innovation"
+      },
+      {
+        "code": "CIS 8080",
+        "name": "Information Systems Security and Privacy in the Age of AI"
+      },
+      {
+        "code": "CIS 8040",
+        "name": "Data Management for AI"
+      },
+      {
+        "code": "CIS 8600",
+        "name": "Generative AI for Business"
+      }
+    ]
+  },
+  "concentrations": {
+    "Cybersecurity": {
+      "displayed_hours": 18,
+      "mode": "listed_courses",
+      "courses": [
+        {
+          "code": "CIS 8088",
+          "name": "Network Security and Hacking"
+        },
+        {
+          "code": "CIS 8085",
+          "name": "Managing Information Systems Risk with AI"
+        },
+        {
+          "code": "CIS 8086",
+          "name": "Protecting Information Assets"
+        },
+        {
+          "code": "CIS 8087",
+          "name": "Cloud Computing and Security"
+        },
+        {
+          "code": "CIS 8697",
+          "name": "The Cybersecurity Experience"
+        },
+        {
+          "code": "CIS 8684",
+          "name": "Cyber Threat Intelligence"
+        }
+      ],
+      "directed_elective": true
+    },
+    "AI for Data-Driven Business": {
+      "displayed_hours": 18,
+      "mode": "listed_courses",
+      "courses": [
+        {
+          "code": "CIS 8045",
+          "name": "Unstructured Data Management in AI"
+        },
+        {
+          "code": "CIS 8005",
+          "name": "Data Programming for Analytics"
+        },
+        {
+          "code": "CIS 8695",
+          "name": "Machine Learning Algorithms"
+        },
+        {
+          "code": "CIS 8795",
+          "name": "Artificial Intelligence Infrastructure at Scale"
+        },
+        {
+          "code": "CIS 8395",
+          "name": "The Big Data Analytics Experience"
+        },
+        {
+          "code": "CIS 8398",
+          "name": "Advanced AI Topics in Business"
+        }
+      ],
+      "directed_elective": true
+    },
+    "AI for Business Innovation": {
+      "displayed_hours": 21,
+      "mode": "choose_n",
+      "choose": 7,
+      "courses": [
+        {
+          "code": "CIS 8672",
+          "name": "Integrated Process Platforms for Innovation"
+        },
+        {
+          "code": "CIS 8674",
+          "name": "Customizing Enterprise Systems Platforms"
+        },
+        {
+          "code": "CIS 8676",
+          "name": "Innovating with Emerging Technologies"
+        },
+        {
+          "code": "CIS 8396",
+          "name": "The Digital Innovation Experience"
+        },
+        {
+          "code": "CIS 8693",
+          "name": "Data Analytics & AI for Digital Innovation"
+        },
+        {
+          "code": "CIS 8694",
+          "name": "AI for Decision Making"
+        },
+        {
+          "code": "CIS 8393",
+          "name": "Advanced Topics in Digital Innovation"
+        },
+        {
+          "code": "CIS 8045",
+          "name": "Agentic AI"
+        }
+      ],
+      "directed_elective": false
+    }
+  },
+  "internship": {
+    "required": true,
+    "course": {
+      "code": "CIS 8391",
+      "name": "Field Study in Computer Information Systems"
+    }
+  }
+}

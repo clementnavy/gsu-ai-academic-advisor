@@ -1,175 +1,261 @@
 import json
+import math
 from pathlib import Path
 import streamlit as st
 
 st.set_page_config(
-    page_title="AI Academic Advisor",
+    page_title="GSU AI Academic Advisor",
     page_icon="🎓",
     layout="wide"
 )
 
-DATA_FILE = Path("data/degree_requirements.json")
+DATA_FILE = Path("data/gsu_msis_requirements.json")
 
 @st.cache_data
-def load_degree_data():
+def load_requirements():
     with DATA_FILE.open("r", encoding="utf-8") as f:
         return json.load(f)
 
-degree = load_degree_data()
-courses = degree["courses"]
-course_codes = [c["code"] for c in courses]
-course_lookup = {c["code"]: c for c in courses}
+req = load_requirements()
 
-st.title("🎓 AI Academic Advisor")
-st.caption("Prototype for personalized academic planning")
+def all_course_options(concentration):
+    items = []
+    seen = set()
 
-st.info(
-    "This first version demonstrates the website and planning workflow. "
-    "The degree requirements in this starter project are demo data only. "
-    "We will replace them with verified GSU catalog data next."
+    for c in req["core_requirement"]["courses"]:
+        if c["code"] not in seen:
+            items.append(c)
+            seen.add(c["code"])
+
+    for c in req["concentrations"][concentration]["courses"]:
+        if c["code"] not in seen:
+            items.append(c)
+            seen.add(c["code"])
+
+    internship = req["internship"]["course"]
+    if internship["code"] not in seen:
+        items.append(internship)
+
+    return items
+
+def course_label(course):
+    return f'{course["code"]} — {course["name"]}'
+
+def remaining_plan(concentration, completed, current):
+    done = set(completed) | set(current)
+
+    core_courses = req["core_requirement"]["courses"]
+    core_done = [c for c in core_courses if c["code"] in done]
+    core_needed_count = max(0, req["core_requirement"]["choose"] - len(core_done))
+    available_core = [c for c in core_courses if c["code"] not in done]
+
+    conc = req["concentrations"][concentration]
+    conc_courses = conc["courses"]
+    conc_done = [c for c in conc_courses if c["code"] in done]
+
+    if conc["mode"] == "choose_n":
+        conc_needed_count = max(0, conc["choose"] - len(conc_done))
+        remaining_conc = [c for c in conc_courses if c["code"] not in done]
+    else:
+        remaining_conc = [c for c in conc_courses if c["code"] not in done]
+        conc_needed_count = len(remaining_conc)
+
+    internship = req["internship"]["course"]
+    internship_remaining = internship["code"] not in done
+
+    return {
+        "core_done": core_done,
+        "core_needed_count": core_needed_count,
+        "available_core": available_core,
+        "conc_done": conc_done,
+        "conc_needed_count": conc_needed_count,
+        "remaining_conc": remaining_conc,
+        "internship_remaining": internship_remaining,
+        "internship": internship,
+        "directed_elective": conc.get("directed_elective", False),
+    }
+
+def build_recommendations(plan, course_load):
+    recs = []
+
+    core_added = 0
+    for c in plan["available_core"]:
+        if len(recs) >= course_load or core_added >= plan["core_needed_count"]:
+            break
+        recs.append({"category": "Core", **c})
+        core_added += 1
+
+    conc_added = 0
+    for c in plan["remaining_conc"]:
+        if len(recs) >= course_load or conc_added >= plan["conc_needed_count"]:
+            break
+        recs.append({"category": "Concentration", **c})
+        conc_added += 1
+
+    if plan["internship_remaining"] and len(recs) < course_load:
+        recs.append({"category": "Internship", **plan["internship"]})
+
+    return recs
+
+st.title("🎓 GSU AI Academic Advisor")
+st.caption("Student Project Prototype — Georgia State University MS Information Systems")
+
+st.warning(
+    "Prototype only. This is not an official GSU advising, Degree Works, registration, "
+    "or graduation-clearance system. Verify final decisions with an academic advisor."
 )
 
 with st.sidebar:
-    st.header("About")
-    st.write("This prototype helps students identify remaining courses and build a possible semester plan.")
-    st.warning("Not an official degree audit. Final decisions must be verified with a university advisor.")
+    st.header("Curriculum source")
+    st.write("Robinson College of Business — Information Systems, M.S.")
+    st.write("Data checked: 2026-09-20")
+    st.link_button("Open Robinson MSIS page", req["source_url"])
 
-st.subheader("1. Student information")
+st.subheader("1. Student profile")
 
-col1, col2 = st.columns(2)
-
-with col1:
-    student_name = st.text_input("Name (optional)", placeholder="Example: Jordan Student")
-    program = st.selectbox("Program", [degree["program"]])
-    catalog_year = st.selectbox("Catalog year", [degree["catalog_year"]])
-
-with col2:
+c1, c2 = st.columns(2)
+with c1:
+    name = st.text_input("Name (optional)")
+    concentration = st.selectbox(
+        "MSIS concentration",
+        list(req["concentrations"].keys())
+    )
     work_status = st.selectbox(
         "Employment status",
         ["Not working", "Part-time", "Full-time"]
     )
+
+with c2:
     course_load = st.selectbox(
-        "Preferred number of courses per semester",
+        "Preferred courses per semester",
         [1, 2, 3, 4],
         index=1
     )
-    preferred_schedule = st.selectbox(
+    schedule_pref = st.selectbox(
         "Preferred schedule",
         ["No preference", "Evening", "Daytime", "Online/Hybrid"]
     )
+    current_term = st.text_input("Current term", value="Fall 2026")
 
 st.subheader("2. Academic record")
 
-uploaded_file = st.file_uploader(
-    "Upload transcript or Degree Works PDF (upload UI only in this first version)",
-    type=["pdf"]
+options = all_course_options(concentration)
+labels = {course_label(c): c["code"] for c in options}
+label_list = list(labels.keys())
+
+uploaded = st.file_uploader(
+    "Upload transcript / Degree Works PDF",
+    type=["pdf"],
+    help="Automatic PDF extraction will be connected in the next build stage."
 )
 
-st.caption("For now, choose completed courses manually. PDF extraction will be added in the next build stage.")
+if uploaded:
+    st.info("File received. Automatic course extraction will be connected next.")
 
-completed_courses = st.multiselect(
-    "Completed courses",
-    course_codes
+completed_labels = st.multiselect("Completed courses", label_list)
+completed = [labels[x] for x in completed_labels]
+
+current_choices = [x for x in label_list if labels[x] not in completed]
+current_labels = st.multiselect("Courses currently in progress", current_choices)
+current = [labels[x] for x in current_labels]
+
+extra = st.text_area(
+    "Additional constraints",
+    placeholder="Example: I work Monday-Friday 8 AM-5 PM and prefer two evening courses."
 )
 
-current_courses = st.multiselect(
-    "Courses currently in progress",
-    [c for c in course_codes if c not in completed_courses]
-)
-
-additional_info = st.text_area(
-    "Anything else the advisor should consider?",
-    placeholder="Example: I work Monday-Friday 8 AM-5 PM and prefer evening classes."
-)
-
-def check_prerequisites(course, completed):
-    missing = []
-    for prereq in course.get("prerequisites", []):
-        if prereq not in completed:
-            missing.append(prereq)
-    return missing
-
-def build_plan():
-    finished_or_current = set(completed_courses) | set(current_courses)
-
-    remaining = [
-        c for c in courses
-        if c["code"] not in finished_or_current
-    ]
-
-    eligible = []
-    blocked = []
-
-    for course in remaining:
-        missing = check_prerequisites(course, set(completed_courses))
-        if missing:
-            blocked.append((course, missing))
-        else:
-            eligible.append(course)
-
-    recommendations = eligible[:course_load]
-    return remaining, recommendations, blocked
-
-st.subheader("3. Build your plan")
+st.subheader("3. Academic plan")
 
 if st.button("Build My Academic Plan", type="primary", use_container_width=True):
-    remaining, recommendations, blocked = build_plan()
+    plan = remaining_plan(concentration, completed, current)
+    recs = build_recommendations(plan, course_load)
 
-    st.success("Academic plan generated.")
+    st.success("Plan generated from the Robinson MSIS curriculum structure.")
 
-    metric1, metric2, metric3 = st.columns(3)
-    metric1.metric("Completed", len(completed_courses))
-    metric2.metric("In progress", len(current_courses))
-    metric3.metric("Remaining", len(remaining))
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Completed", len(completed))
+    m2.metric("In progress", len(current))
+    m3.metric("Core slots left", plan["core_needed_count"])
+    m4.metric("Concentration items left", plan["conc_needed_count"])
 
     st.divider()
-
     left, right = st.columns(2)
 
     with left:
         st.markdown("### Recommended next courses")
-        if recommendations:
-            for course in recommendations:
-                st.write(f"**{course['code']}** — {course['name']} ({course['credits']} credits)")
+        if recs:
+            for item in recs:
+                st.write(f'**{item["code"]}** — {item["name"]}')
+                st.caption(item["category"])
         else:
-            st.write("No currently eligible courses found in the demo requirements.")
+            st.write("No additional listed course recommendation was generated.")
 
-        st.markdown("### Why this plan?")
-        reasons = [
-            f"You selected a preferred load of **{course_load} course(s) per semester**.",
-            f"Your employment status is **{work_status}**.",
-            f"Your schedule preference is **{preferred_schedule}**."
-        ]
-        for reason in reasons:
-            st.write("• " + reason)
-
-        if additional_info.strip():
-            st.write("• Additional consideration:", additional_info)
+        st.markdown("### Personalized considerations")
+        st.write(f"• Preferred load: **{course_load} course(s) per semester**")
+        st.write(f"• Employment status: **{work_status}**")
+        st.write(f"• Schedule preference: **{schedule_pref}**")
+        if extra.strip():
+            st.write(f"• Student note: {extra}")
 
     with right:
-        st.markdown("### Remaining requirements")
-        if remaining:
-            for course in remaining:
-                st.write(f"• {course['code']} — {course['name']}")
-        else:
-            st.write("No remaining demo requirements.")
+        st.markdown("### Degree progress")
 
-        st.markdown("### Prerequisite warnings")
-        if blocked:
-            for course, missing in blocked:
-                st.warning(
-                    f"{course['code']} is blocked until: {', '.join(missing)}"
-                )
+        st.write(
+            f'**MSIS core:** {len(plan["core_done"])} of '
+            f'{req["core_requirement"]["choose"]} required core selections accounted for.'
+        )
+
+        conc = req["concentrations"][concentration]
+        if conc["mode"] == "choose_n":
+            st.write(
+                f'**{concentration}:** {len(plan["conc_done"])} of '
+                f'{conc["choose"]} required concentration selections accounted for.'
+            )
         else:
-            st.write("No prerequisite warnings.")
+            st.write(
+                f'**{concentration}:** {len(plan["conc_done"])} listed concentration '
+                f'courses accounted for; the Robinson page displays a '
+                f'{conc["displayed_hours"]}-hour concentration core.'
+            )
+
+        internship_code = req["internship"]["course"]["code"]
+        if plan["internship_remaining"]:
+            st.write(f"**Internship:** {internship_code} still appears outstanding.")
+        else:
+            st.write(f"**Internship:** {internship_code} accounted for.")
+
+        if plan["directed_elective"]:
+            st.warning(
+                "Robinson also lists a Directed Elective for this concentration. "
+                "The public page does not fully specify the rule needed for this prototype, "
+                "so the app flags it for advisor verification rather than guessing."
+            )
 
     st.divider()
-    st.markdown("### AI Advisor")
-    st.info(
-        "The GenAI explanation will appear here after we connect the AI model. "
-        "For now, the recommendation comes from rule-based degree logic."
+
+    listed_remaining = (
+        plan["core_needed_count"]
+        + plan["conc_needed_count"]
+        + (1 if plan["internship_remaining"] else 0)
     )
 
-    st.caption(
-        "Prototype only — not an official academic advising or graduation clearance tool."
+    if course_load > 0 and listed_remaining > 0:
+        est_terms = math.ceil(listed_remaining / course_load)
+        st.markdown("### Planning estimate")
+        st.write(
+            f"At **{course_load} course(s) per semester**, the currently modeled "
+            f"requirements would take approximately **{est_terms} additional semester(s)**."
+        )
+        st.caption(
+            "This is not an official graduation date. It does not yet account for "
+            "course availability, prerequisites, waivers, transfer credit, catalog-year rules, "
+            "or directed-elective details."
+        )
+    elif listed_remaining == 0:
+        st.success("All requirements represented in this prototype appear accounted for.")
+
+    st.markdown("### AI Advisor explanation")
+    st.info(
+        "Next step: connect a GenAI model so this section explains the plan in natural language, "
+        "answers follow-up questions, and reasons over student constraints without changing the verified degree rules."
     )
